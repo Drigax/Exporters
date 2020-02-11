@@ -371,7 +371,7 @@ namespace Maya2Babylon
                     name = dagNode.name,
                     index = indexByFullPathName[currentFullPathName],
                     parentBoneIndex = parentIndex,
-                    matrix = GetBabylonMatrix(currentNodeTransform, frameBySkeletonID[skinIndex]).m
+                    matrix = ConvertMayaToBabylonMatrix(currentNodeTransform.transformationMatrix).m
                 };
                 if (exportParameters.exportAnimations)
                 {

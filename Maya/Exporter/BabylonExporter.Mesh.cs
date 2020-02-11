@@ -521,7 +521,7 @@ namespace Maya2Babylon
                 setEnvelopesToZeros(mFnMesh.objectProperty);
             }
 
-            ExtractGeometry(babylonMesh, mFnMesh, vertices, indices, subMeshes, uvSetNames, ref isUVExportSuccess, ref isTangentExportSuccess, optimizeVertices, isDoubleSided);
+            ExtractGeometry(babylonMesh, meshShapeOrig, vertices, indices, subMeshes, uvSetNames, ref isUVExportSuccess, ref isTangentExportSuccess, optimizeVertices, isDoubleSided);
 
             if (vertices.Count >= 65536)
             {
