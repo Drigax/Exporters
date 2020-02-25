@@ -400,21 +400,7 @@ namespace Maya2Babylon
 
             if (shaders.Count > 0)
             {
-                List<MFnDependencyNode> materials = new List<MFnDependencyNode>();
-                foreach (MObject shader in shaders)
-                {
-                    // Retreive material
-                    MFnDependencyNode shadingEngine = new MFnDependencyNode(shader);
-                    MPlug mPlugSurfaceShader = shadingEngine.findPlug("surfaceShader");
-                    MObject materialObject = mPlugSurfaceShader.source.node;
-                    if (materialObject.hasFn(MFn.Type.kSurfaceShader))
-                    {
-                        isDoubleSided = true;
-                    }
-                    MFnDependencyNode material = new MFnDependencyNode(materialObject);
-
-                    materials.Add(material);
-                }
+                List<MFnDependencyNode> materials = GetMaterials(shaders, out isDoubleSided);
 
                 if (shaders.Count == 1 && !isDoubleSided)
                 {
@@ -640,6 +626,27 @@ namespace Maya2Babylon
             RaiseMessage("BabylonExporter.Mesh | done", 2);
 
             return babylonMesh;
+        }
+
+        private List<MFnDependencyNode> GetMaterials(MObjectArray shaders, out bool isDoubleSided)
+        {
+            List<MFnDependencyNode> materials = new List<MFnDependencyNode>();
+            isDoubleSided = false;
+            foreach (MObject shader in shaders)
+            {
+                // Retreive material
+                MFnDependencyNode shadingEngine = new MFnDependencyNode(shader);
+                MPlug mPlugSurfaceShader = shadingEngine.findPlug("surfaceShader");
+                MObject materialObject = mPlugSurfaceShader.source.node;
+                if (materialObject.hasFn(MFn.Type.kSurfaceShader))
+                {
+                    isDoubleSided = true;
+                }
+                MFnDependencyNode material = new MFnDependencyNode(materialObject);
+
+                materials.Add(material);
+            }
+            return materials;
         }
 
         /// <summary>
@@ -1126,7 +1133,6 @@ namespace Maya2Babylon
             return mFnSkinCluster;
         }
 
-
         /// <summary>
         /// Instances manager
         /// </summary>
@@ -1135,9 +1141,35 @@ namespace Maya2Babylon
         private BabylonMesh GetMasterMesh(MFnMesh mFnMesh, BabylonMesh babylonMesh)
         {
             BabylonMesh babylonMasterMesh = null;
-            int index = exportedMFnMesh.FindIndex(mesh => mesh.fullPathName.Equals(mFnMesh.fullPathName));
+            int index = exportedMFnMesh.FindIndex(mesh =>
+            {
+                if (!mesh.fullPathName.Equals(mFnMesh.fullPathName))
+                {
+                    return false;
+                }
+                MObjectArray meshShaders = new MObjectArray();
+                bool meshIsDoubleSided = false;
+                MObjectArray otherMeshShaders = new MObjectArray();
+                bool otherMeshIsDoubleSided = false;
+                mFnMesh.getConnectedShaders(0, meshShaders, new MIntArray());
+                mesh.getConnectedShaders(0, otherMeshShaders, new MIntArray());
 
-            if(index == -1)
+                var meshMaterials = GetMaterials(meshShaders, out meshIsDoubleSided);
+                var otherMeshMaterials = GetMaterials(meshShaders, out otherMeshIsDoubleSided);
+
+                if (meshMaterials.Count != otherMeshMaterials.Count)
+                    return false;
+
+                var dependencyNodeComparer = new MFnDependencyNodeEqualityComparer();
+                for (int i = 0; i < meshMaterials.Count; i++)
+                {
+                    if (!dependencyNodeComparer.Equals(meshMaterials.ElementAt(i), otherMeshMaterials.ElementAt(i)))
+                        return false;
+                }
+                return true;
+            });
+
+            if (index == -1)
             {
                 exportedMFnMesh.Add(mFnMesh);
                 exportedMasterBabylonMesh.Add(babylonMesh);
