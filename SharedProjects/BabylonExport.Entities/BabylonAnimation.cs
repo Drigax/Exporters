@@ -56,6 +56,8 @@ namespace BabylonExport.Entities
             blendingSpeed = 0.01f;
         }
 
+        public enum AnimationInterpolationMode { Linear };
+
         public object Clone()
         {
             return new BabylonAnimation

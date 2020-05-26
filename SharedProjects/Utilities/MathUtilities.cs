@@ -33,6 +33,14 @@ namespace Utilities
             return res;
         }
 
+        public static float GetLerpFactor(float from, float to, float value)
+        {
+            float diffNormalized = (value - from) / (to - from);
+            diffNormalized = Math.Min(diffNormalized, 1.0f);
+            diffNormalized = Math.Max(diffNormalized, 0.0f);
+            return diffNormalized;
+        }
+
         public static float[] LerpEulerAngle(float[] minArray, float[] maxArray, float t)
         {
             float[] res = new float[minArray.Length];

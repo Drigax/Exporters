@@ -2,6 +2,7 @@ using Autodesk.Maya.OpenMaya;
 using BabylonExport.Entities;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Utilities;
 
@@ -12,8 +13,6 @@ namespace Maya2Babylon
         public string animCurv;
         public Dictionary<int, float> valuePerFrame = new Dictionary<int, float>();
     }
-
-    enum AnimationInterpolationMode { Linear };
 
     internal partial class BabylonExporter
     {
@@ -40,11 +39,11 @@ namespace Maya2Babylon
             _exporNodeAnimation(babylonNode, mFnTransform, GetAnimationsFrameByFrame);
         }
 
-        private void _exporNodeAnimation(BabylonNode babylonNode, MFnTransform mFnTransform, Func<MFnTransform, List<BabylonAnimation>>  getAnimationsFunc)
+        private void _exporNodeAnimation(BabylonNode babylonNode, MFnTransform mFnTransform, Func<MFnTransform, bool, List<BabylonAnimation>>  getAnimationsFunc, bool optimizeAnimationFrames = true)
         {
             try
             {
-                babylonNode.animations = getAnimationsFunc(mFnTransform).ToArray();
+                babylonNode.animations = getAnimationsFunc(mFnTransform, optimizeAnimationFrames).ToArray();
 
                 // TODO - Retreive from Maya
                 babylonNode.autoAnimate = true;
@@ -58,7 +57,7 @@ namespace Maya2Babylon
             }
         }
 
-        private List<BabylonAnimation> GetAnimationsFrameByFrame(MFnTransform mFnTransform)
+        private List<BabylonAnimation> GetAnimationsFrameByFrame(MFnTransform mFnTransform, bool optimizeAnimationFrames = true)
         {
             int start = Loader.GetMinTime();
             int end = Loader.GetMaxTime();
@@ -179,7 +178,7 @@ namespace Maya2Babylon
         /// </summary>
         /// <param name="transform">Transform above mesh/camera/light</param>
         /// <returns></returns>
-        private List<BabylonAnimation> GetAnimation(MFnTransform transform)
+        private List<BabylonAnimation> GetAnimation(MFnTransform transform, bool optimizeAnimationFrames = true)
         {
             // Animations
             MPlugArray connections = new MPlugArray();
@@ -327,7 +326,7 @@ namespace Maya2Babylon
                 // Convert euler to quaternion angles
                 if (indexAnimationProperty == 1) // Rotation
                 {
-                    BabylonAnimationKey nextBabylonAnimationKey = null;
+                    BabylonAnimationKey nextBabylonAnimationKey = null; 
                     BabylonVector3 nextBabylonAnimationEulerAngles = null;
                     int subdivisions = 0;
 
@@ -356,7 +355,8 @@ namespace Maya2Babylon
                                 for (int subdivision = 1; subdivision <= subdivisions; ++subdivision)
                                 {
                                     var newKeyframe = babylonAnimationKey.frame + (frameDiff * ((float)subdivision / (float)(subdivisions + 1)));
-                                    var newKeyframeValues = InterpolateBetweenRotationalKeyframes(babylonAnimationKey, nextBabylonAnimationKey, newKeyframe, AnimationInterpolationMode.Linear);
+                                    var lerpAmount = MathUtilities.GetLerpFactor(babylonAnimationKey.frame, nextBabylonAnimationKey.frame, newKeyframe);
+                                    var newKeyframeValues = BabylonAnimationKey.InterpolateBetweenEulerRotationalKeyframes(babylonAnimationKey, nextBabylonAnimationKey, lerpAmount, BabylonAnimation.AnimationInterpolationMode.Linear);
                                     var subdividedAnimationKey = new BabylonAnimationKey() { frame = newKeyframe, values = newKeyframeValues };
                                     babylonAnimationKeys.Insert(keyframeIndex + subdivision, subdividedAnimationKey);
                                     this.RaiseWarning($"Frame inserted at {newKeyframe}", 3);
@@ -375,11 +375,14 @@ namespace Maya2Babylon
                 var keysFull = new List<BabylonAnimationKey>(babylonAnimationKeys);
 
                 // Optimization
-                OptimizeAnimations(babylonAnimationKeys, true);
+                if (optimizeAnimationFrames)
+                {
+                    OptimizeAnimations(babylonAnimationKeys, true);
+                }
 
                 // Ensure animation has at least 2 frames
                 string babylonAnimationProperty = babylonAnimationProperties[indexAnimationProperty];
-                if (IsAnimationKeysRelevant(babylonAnimationKeys, babylonAnimationProperty))
+                if (IsAnimationKeysRelevant(babylonAnimationKeys, babylonAnimationProperty) || !optimizeAnimationFrames)
                 {
                     // Create BabylonAnimation
                     animationsObject.Add(new BabylonAnimation()
@@ -396,20 +399,6 @@ namespace Maya2Babylon
             }
 
             return animationsObject;
-        }
-
-        static float[] InterpolateBetweenRotationalKeyframes(BabylonAnimationKey from, BabylonAnimationKey to, float frame, AnimationInterpolationMode interpolationMode)
-        {
-            float frameDiffNormalized = (frame - from.frame)/(to.frame - from.frame);
-            frameDiffNormalized = Math.Min(frameDiffNormalized, 1.0f);
-            frameDiffNormalized = Math.Max(frameDiffNormalized, 0.0f);
-
-            switch (interpolationMode)
-            {
-                case AnimationInterpolationMode.Linear:
-                default:
-                    return MathUtilities.LerpEulerAngle(from.values, to.values, frameDiffNormalized);
-            }
         }
 
         static void OptimizeAnimations(List<BabylonAnimationKey> keys, bool removeLinearAnimationKeys)
@@ -495,6 +484,202 @@ namespace Maya2Babylon
                                                 new BabylonQuaternion(rotationQuaternion[0], rotationQuaternion[1], rotationQuaternion[2], rotationQuaternion[3]), // rotation
                                                 new BabylonVector3(position[0], position[1], position[2])   // position
                                             );
+        }
+
+        private BabylonAnimation GetAnimationMatrix(MFnTransform transform)
+        {
+            // retrieve the BabylonAnimations for this transform, don't optmize. We need this to reconstruct into matrix animations.
+            var animationsObject = GetAnimation(transform, false);
+
+            BabylonAnimation positionAnimation = null;
+            BabylonAnimation rotationQuaternionAnimation = null;
+            BabylonAnimation scalingAnimation = null;
+
+            foreach (var animationTrack in animationsObject)
+            {
+                if (animationTrack.property.Contains("position"))
+                {
+                    positionAnimation = animationTrack;
+                }
+                else if (animationTrack.property.Contains("rotationQuaternion"))
+                {
+                    rotationQuaternionAnimation = animationTrack;
+                }
+                else if (animationTrack.property.Contains("scaling"))
+                {
+                    scalingAnimation = animationTrack;
+                }
+            }
+
+            if (positionAnimation == null && rotationQuaternionAnimation == null && scalingAnimation == null)
+            {
+                return null;
+            }
+
+            var defaultPosition = new float[3];
+            var defaultRotation = new float[3];
+            var defaultRotationQuaternion = new float[4];
+            var defaultRotationOrder = BabylonExport.Entities.BabylonVector3.EulerRotationOrder.XYZ;
+            var defaultScale = new float[3];
+
+            GetTransform(transform, ref defaultPosition, ref defaultRotationQuaternion, ref defaultRotation, ref defaultRotationOrder, ref defaultScale);
+
+            // instantiate any non-animated tracks with the tranform's default value.
+            IEnumerable<float> uniqueFrameTimes = new HashSet<float>();
+            if (positionAnimation != null && positionAnimation.keys != null)
+            {
+                uniqueFrameTimes.Union(positionAnimation.keys.Select( key => { return key.frame; }));
+            }
+
+            if (rotationQuaternionAnimation != null && rotationQuaternionAnimation.keys != null)
+            {
+                uniqueFrameTimes.Union(rotationQuaternionAnimation.keys.Select(key => { return key.frame; }));
+            }
+
+            if (scalingAnimation != null && scalingAnimation.keys != null)
+            {
+                uniqueFrameTimes.Union(scalingAnimation.keys.Select(key => { return key.frame; }));
+            }
+
+            uniqueFrameTimes.OrderBy(frame => frame);
+
+            if (positionAnimation == null)
+            {
+                var key = new BabylonAnimationKey()
+                {
+                    frame = uniqueFrameTimes.First(),
+                    values = defaultPosition
+                };
+
+                var keys = new List<BabylonAnimationKey>();
+                keys.Add(key);
+
+                positionAnimation = new BabylonAnimation()
+                {
+                    dataType = (int)BabylonAnimation.DataType.Vector3,
+                    name = "position animation",
+                    framePerSecond = Loader.GetFPS(),
+                    loopBehavior = (int)BabylonAnimation.LoopBehavior.Cycle,
+                    property = "position",
+                    keys = keys.ToArray(),
+                    keysFull = keys
+                };
+            }
+
+            if (rotationQuaternionAnimation == null)
+            {
+                var key = new BabylonAnimationKey()
+                {
+                    frame = uniqueFrameTimes.First(),
+                    values = defaultRotationQuaternion
+                };
+
+                var keys = new List<BabylonAnimationKey>();
+                keys.Add(key);
+
+                rotationQuaternionAnimation = new BabylonAnimation()
+                {
+                    dataType = (int)BabylonAnimation.DataType.Quaternion,
+                    name = "rotationQuaternion animation",
+                    framePerSecond = Loader.GetFPS(),
+                    loopBehavior = (int)BabylonAnimation.LoopBehavior.Cycle,
+                    property = "rotationQuaternion",
+                    keys = keys.ToArray(),
+                    keysFull = keys
+                };
+            }
+
+            if (scalingAnimation == null)
+            {
+                var key = new BabylonAnimationKey()
+                {
+                    frame = uniqueFrameTimes.First(),
+                    values = defaultScale
+                };
+
+                var keys = new List<BabylonAnimationKey>();
+                keys.Add(key);
+
+                scalingAnimation = new BabylonAnimation()
+                {
+                    dataType = (int)BabylonAnimation.DataType.Vector3,
+                    name = "scaling animation",
+                    framePerSecond = Loader.GetFPS(),
+                    loopBehavior = (int)BabylonAnimation.LoopBehavior.Cycle,
+                    property = "scaling",
+                    keys = keys.ToArray(),
+                    keysFull = keys
+                };
+            }
+
+            var matrixAnimationKeys = new List<BabylonAnimationKey>();
+
+            // if this exact frame is keyframed in the animation, use it. else, lerp/slerp between the nearest frames.
+            Func<BabylonAnimation, float, float[]> interpolateKeyframeValue = delegate (BabylonAnimation animation, float frame) {
+                BabylonAnimationKey currentKey = null;
+                BabylonAnimationKey nextKey = null;
+                for (int frameIndex = 0; frameIndex < animation.keys.Length; frameIndex++)
+                {
+                    currentKey = animation.keys[frameIndex];
+                    if (currentKey.frame > frame)
+                    {
+                        return null;
+                    }
+                    if (currentKey.frame == frame)
+                    {
+                        return currentKey.values;
+                    }
+                    else if (frameIndex < animation.keys.Length)
+                    {
+                        nextKey = animation.keys[frameIndex + 1];
+                        if (nextKey.frame > frame)
+                        {
+                            var amount = MathUtilities.GetLerpFactor(currentKey.frame, nextKey.frame, frame);
+                            switch (animation.property)
+                            {
+                                case "rotationQuaternion":
+                                    return BabylonAnimationKey.InterpolateBetweenRotationQuaternionKeyframes(currentKey, nextKey, amount, BabylonAnimation.AnimationInterpolationMode.Linear);
+                                case "rotation":
+                                    return BabylonAnimationKey.InterpolateBetweenEulerRotationalKeyframes(currentKey, nextKey, amount, BabylonAnimation.AnimationInterpolationMode.Linear);
+                                case "translation":
+                                case "scaling":
+                                default:
+                                    return BabylonAnimationKey.InterpolateBetweenTransScaleKeyframes(currentKey, nextKey, amount, BabylonAnimation.AnimationInterpolationMode.Linear);
+                            }
+                        }
+                    }
+                }
+                return currentKey != null ? currentKey.values : null;
+            };
+
+            float[] positionAnimationValue = null;
+            float[] rotationQuaternionAnimationValue = null;
+            float[] scalingAnimationValue = null;
+            BabylonMatrix currentFrameMatrix = BabylonMatrix.Identity();
+            foreach (var frameTime in uniqueFrameTimes)
+            {
+                positionAnimationValue = interpolateKeyframeValue(positionAnimation, frameTime);
+                rotationQuaternionAnimationValue = interpolateKeyframeValue(rotationQuaternionAnimation, frameTime);
+                scalingAnimationValue = interpolateKeyframeValue(scalingAnimation, frameTime);
+
+                BabylonMatrix.ComposeToRef(BabylonVector3.FromArray(scalingAnimationValue), BabylonQuaternion.FromArray(rotationQuaternionAnimationValue), BabylonVector3.FromArray(positionAnimationValue), currentFrameMatrix);
+                matrixAnimationKeys.Add(new BabylonAnimationKey() { frame = frameTime, values = currentFrameMatrix.m });
+            }
+
+            var matrixAnimationKeysFull = new List<BabylonAnimationKey>(matrixAnimationKeys);
+
+            BabylonAnimation matrixAnimation = new BabylonAnimation()
+            {
+                dataType = (int)BabylonAnimation.DataType.Matrix,
+                name = $"{mFnTransform.name}Animation",
+                framePerSecond = Loader.GetFPS(),
+                loopBehavior = (int)BabylonAnimation.LoopBehavior.Cycle,
+                property = "_matrix",
+                keys = matrixAnimationKeys.ToArray(),
+                keysFull = matrixAnimationKeysFull
+            };
+
+            return matrixAnimation;
         }
 
         private BabylonAnimation GetAnimationsFrameByFrameMatrix(MFnTransform mFnTransform)
